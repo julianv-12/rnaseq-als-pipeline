@@ -1,0 +1,398 @@
+---
+title: "Transcriptomic Analysis of ALS RNA-seq Samples"
+author: "Julián Vitali"
+date: "2026-05-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Introduction
+
+Amyotrophic Lateral Sclerosis (ALS) is a progressive neurodegenerative disease characterized by the degeneration of motor neurons. RNA sequencing (RNA-seq) enables the investigation of transcriptomic alterations associated with disease progression and cellular dysfunction.
+
+The objective of this project was to perform a differential gene expression analysis between ALS and control RNA-seq samples using a reproducible bioinformatics workflow. Downstream analyses included visualization, clustering, and functional enrichment analysis to identify biological pathways potentially associated with ALS pathophysiology.
+
+
+# Methods
+
+This analysis was performed using gene-level count data generated from paired-end RNA-seq samples. Differential expression analysis was carried out in R using DESeq2, followed by exploratory visualization and functional enrichment analysis.
+
+## Load libraries
+
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(EnhancedVolcano)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+```
+
+## Import Gene Count Matrix
+Gene-level count data generated with featureCounts were imported into R for downstream differential expression analysis.
+
+
+
+```{r}
+counts <- read.delim(
+  "../results/counts/gene_counts_pe.txt",
+  comment.char = "#"
+)
+
+head(counts)
+```
+## Sample Metadata
+Metadata describing sample identity and experimental condition was manually defined for downstream statistical analysis.
+```{r}
+metadata <- data.frame(
+  sample = c(
+    "data.bam.SRR22511818.sorted.bam",
+    "data.bam.SRR22511830.sorted.bam",
+    "data.bam.SRR22511910.sorted.bam",
+    "data.bam.SRR22511922.sorted.bam"
+  ),
+  condition = c(
+    "ALS",
+    "ALS",
+    "Control",
+    "Control"
+  )
+)
+
+metadata
+
+```
+## DESeq2 Dataset Construction
+The count matrix was extracted from the featureCounts output and combined with the sample metadata to create a DESeq2 dataset. The experimental design was defined using the condition variable, with Control set as the reference group.
+
+```{r}
+count_matrix <- counts[,7:10]
+
+rownames(count_matrix) <- counts$Geneid
+
+metadata$condition <- factor(
+  metadata$condition,
+  levels = c("Control", "ALS")
+)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = metadata,
+  design = ~ condition
+)
+
+dds
+```
+The DESeq2 object contains normalized count information and experimental metadata required for downstream differential expression analysis.
+
+## Differential Expression Analysis
+Differential expression analysis was performed using DESeq2. The workflow includes normalization, estimation of dispersion parameters, and statistical testing between ALS and control conditions.
+```{r}
+dds <- DESeq(dds)
+
+```
+DESeq2 estimated size factors and dispersion values across samples to identify genes significantly dysregulated between experimental groups.
+
+## Extraction of Differentially Expressed Genes
+Statistical results were extracted from the DESeq2 object to identify genes differentially expressed between ALS and control samples.
+```{r}
+res <- results(
+  dds,
+  contrast = c("condition", "ALS", "Control")
+)
+
+summary(res)
+```
+The analysis identified both upregulated and downregulated genes in ALS samples relative to controls. Significance was evaluated using adjusted p-values to account for multiple hypothesis testing.
+
+# Results
+
+## Volcano Plot of Differentially Expressed Genes
+Differential gene expression between ALS and control samples was visualized using a volcano plot. Genes with significant adjusted p-values and large fold changes were highlighted to identify major transcriptomic alterations associated with ALS.
+```{r}
+EnhancedVolcano(
+  res,
+  lab = rownames(res),
+  x = "log2FoldChange",
+  y = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 1,
+  pointSize = 1.8,
+  labSize = 0,
+  title = "ALS vs Control",
+  subtitle = "Differential expression analysis",
+  caption = "DESeq2 analysis"
+)
+```
+The volcano plot revealed multiple significantly dysregulated genes between ALS and control samples. Several genes displayed strong positive or negative log2 fold changes, suggesting substantial transcriptional alterations associated with neurodegenerative processes.
+
+
+## Variance Stabilizing Transformation
+A variance stabilizing transformation (VST) was applied to normalize count variability across samples prior to exploratory visualization analyses such as PCA and heatmap clustering.
+```{r}
+vsd <- vst(dds, blind = FALSE)
+
+```
+Variance stabilization reduces the dependence between variance and mean expression levels, improving visualization and sample comparison across transcriptomic datasets.
+
+
+## Principal Component Analysis (PCA)
+Principal Component Analysis (PCA) was performed after variance stabilizing transformation to evaluate overall transcriptomic variability and sample clustering between ALS and control groups. 
+
+```{r}
+plotPCA(
+  vsd,
+  intgroup = "condition"
+)
+
+```
+The PCA plot showed partial separation between ALS and control samples, suggesting transcriptomic differences associated with disease condition. Some variability between samples was also observed, which is expected in human RNA-seq datasets due to biological heterogeneity.
+
+## Heatmap of Highly Variable Genes
+To investigate expression patterns across samples, a heatmap was generated using the top 50 most variable genes identified after variance stabilizing transformation.
+
+```{r}
+
+# Extract transformed counts from the vst object
+vsd_matrix <- assay(vsd)
+
+# Calculate variance for each gene across samples
+gene_variance <- apply(vsd_matrix, 1, var)
+
+# Select the 50 most variable genes
+top_variable_genes <- names(sort(gene_variance, decreasing = TRUE))[1:50]
+
+# Create heatmap annotation using sample metadata
+annotation_col <- data.frame(
+  condition = metadata$condition
+)
+
+rownames(annotation_col) <- metadata$sample
+
+# Plot heatmap
+pheatmap(
+  vsd_matrix[top_variable_genes, ],
+  annotation_col = annotation_col,
+  show_rownames = FALSE,
+  scale = "row",
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  main = "Top 50 most variable genes"
+)
+```
+Hierarchical clustering revealed distinct expression patterns across ALS and control samples. Genes with high variability contributed to sample grouping and highlighted transcriptomic heterogeneity between experimental conditions.
+
+## Identification of Significant Differentially Expressed Genes
+Genes significantly dysregulated between ALS and control samples were filtered based on adjusted p-value and log2 fold change thresholds.
+
+```{r}
+sig_res <- subset(
+  res,
+  padj < 0.05 & abs(log2FoldChange) > 1
+)
+
+head(sig_res[order(sig_res$padj), ])
+
+
+```
+Several genes showed strong transcriptional dysregulation in ALS samples relative to controls, including both upregulated and downregulated transcripts with highly significant adjusted p-values.
+
+## Gene Annotation
+Ensembl gene identifiers were converted to gene symbols to facilitate biological interpretation of significantly dysregulated genes.
+
+```{r}
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = gsub("\\..*", "", rownames(sig_res)),
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+sig_res$symbol <- gene_symbols
+
+head(
+  sig_res[order(sig_res$padj), c(
+    "symbol",
+    "log2FoldChange",
+    "padj"
+  )]
+)
+
+```
+Annotated gene symbols facilitate downstream biological interpretation and pathway enrichment analysis of differentially expressed genes identified in ALS samples.
+
+## Functional Enrichment Analysis
+
+Gene Ontology (GO) enrichment analysis was performed using significantly dysregulated genes to identify biological processes potentially altered in ALS samples.
+
+```{r}
+sig_genes <- rownames(sig_res)
+
+# Remove Ensembl version numbers
+sig_genes <- gsub("\\..*", "", sig_genes)
+
+head(sig_genes)
+
+ego <- enrichGO(
+  gene = sig_genes,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENSEMBL",
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+head(ego)
+```
+
+Functional enrichment analysis was used to move from individual differentially expressed genes toward broader biological processes. The enriched GO terms provide functional context for interpreting the transcriptomic differences observed between ALS and control samples.
+
+## GO Enrichment Dotplot
+The most significantly enriched biological processes identified by Gene Ontology analysis were visualized using a dotplot representation.
+
+```{r}
+dotplot(
+  ego,
+  showCategory = 10
+)
+
+```
+The enrichment analysis highlighted pathways associated with synaptic vesicle transport, mitochondrial metabolism, energy production, and chaperone-mediated autophagy. These biological processes are consistent with mechanisms frequently reported in neurodegenerative diseases, including ALS.
+
+# Discussion
+This RNA-seq analysis identified multiple transcriptional alterations between ALS and control samples. Differential expression analysis revealed both upregulated and downregulated genes associated with the disease condition, suggesting widespread transcriptomic dysregulation in ALS samples.
+
+Exploratory analyses including PCA and hierarchical clustering demonstrated variability between ALS and control transcriptomic profiles, while functional enrichment analysis highlighted biological processes related to synaptic signaling, mitochondrial metabolism, vesicle transport, and chaperone-mediated autophagy.
+
+Several of the enriched pathways identified in this analysis have been previously associated with neurodegenerative diseases and ALS pathophysiology. In particular, alterations in energy metabolism, synaptic function, and protein homeostasis are considered important mechanisms contributing to neuronal dysfunction and degeneration.
+
+This analysis also demonstrates the utility of RNA-seq and bioinformatics approaches for investigating complex molecular mechanisms underlying neurodegenerative diseases. Despite the limited sample size, the workflow successfully identified biologically relevant transcriptomic patterns and functional pathways associated with ALS.
+
+
+
+# Conclusion
+This project demonstrates a reproducible RNA-seq workflow for identifying transcriptomic alterations associated with ALS. Using differential expression analysis, exploratory visualization, and functional enrichment approaches, several biologically relevant pathways related to neurodegeneration were identified.
+
+The integration of RNA-seq data processing, statistical analysis, and biological interpretation highlights the value of bioinformatics tools for studying complex diseases such as ALS. This workflow also provides a foundation for future transcriptomic studies and more advanced integrative analyses.
+
+
+# Export and Output Files
+The following code blocks export publication-quality figures and processed results generated throughout the analysis workflow.
+
+## Save volcano plot
+```{r}
+
+volcano_plot <- EnhancedVolcano(
+  res,
+  lab = rownames(res),
+  x = "log2FoldChange",
+  y = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 1,
+  pointSize = 1.8,
+  labSize = 0,
+  title = "ALS vs Control",
+  subtitle = "Differential expression analysis",
+  caption = "DESeq2 analysis"
+)
+
+ggsave(
+  filename = "../results/plots/ALS_vs_Control_volcano.png",
+  plot = volcano_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+## Save GO enrichment results
+```{r}
+ego_df <- as.data.frame(ego)
+
+write.csv(
+  ego_df,
+  "../results/deseq2/GO_enrichment_ALS_vs_Control.csv",
+  row.names = FALSE
+)
+
+```
+
+## Save GO enrichment dotplot
+```{r}
+
+go_dotplot <- dotplot(
+  ego,
+  showCategory = 10
+)
+
+ggsave(
+  filename = "../results/plots/GO_enrichment_dotplot.png",
+  plot = go_dotplot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+## Save PCA plot
+```{r}
+pca_plot <- plotPCA(
+  vsd,
+  intgroup = "condition"
+)
+
+ggsave(
+  filename = "../results/plots/PCA_ALS_vs_Control.png",
+  plot = pca_plot,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+
+```
+## Save heatmap
+```{r}
+png(
+  "../results/plots/Heatmap_top50_genes.png",
+  width = 1800,
+  height = 1400,
+  res = 300
+)
+
+pheatmap(
+  vsd_matrix[top_variable_genes, ],
+  annotation_col = annotation_col,
+  show_rownames = FALSE,
+  scale = "row",
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  main = "Top 50 most variable genes"
+)
+
+dev.off()
+
+```
+## Export top significant genes
+```{r}
+top_genes <- sig_res[order(sig_res$padj), ]
+
+top_genes_df <- as.data.frame(top_genes)
+
+write.csv(
+  top_genes_df,
+  "../results/deseq2/top_significant_genes.csv"
+)
+
+```
